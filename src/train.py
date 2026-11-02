@@ -5,6 +5,8 @@ from pathlib import Path
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from transformers import DataCollatorForSeq2Seq
 import torch
+from torch.utils.data import DataLoader
+from torch.nn.utils.rnn import pad_sequence
 
 checkpoint = "allenai/PRIMERA-multinews"
 DATA_DIR = Path(__file__).resolve().parent.parent / "datasets" / "amasum_hf"
@@ -42,5 +44,14 @@ tokenized = ds.map(tokenize_function, batched=True, remove_columns=ds["train"].c
 tokenized.set_format("torch")
 
 data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+def collate_function(features):
+    global_masks = [f.pop("global_attention_mask") for f in features]
+    batch = data_collator(features)
+    batch["global_attention_mask"] = pad_sequence(global_masks, batch_first=True, padding_value=0)
+    return batch
+
+train_dataloader = DataLoader(tokenized["train"], shuffle=True, batch_size=2, collate_fn=collate_function)
+val_dataloader = DataLoader(tokenized["valid"], shuffle=False, batch_size=2, collate_fn=collate_function)
+test_dataloader = DataLoader(tokenized["test"], shuffle=False, batch_size=2, collate_fn=collate_function)
 
 
