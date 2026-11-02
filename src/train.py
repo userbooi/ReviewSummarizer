@@ -3,10 +3,15 @@ from prepare_dataset import save_dataset
 from pathlib import Path
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from transformers import DataCollatorForSeq2Seq
+from transformers import DataCollatorForSeq2Seq, get_scheduler
 import torch
+from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
+
+from tqdm.auto import tqdm
+
+from accelerate import Accelerator
 
 checkpoint = "allenai/PRIMERA-multinews"
 DATA_DIR = Path(__file__).resolve().parent.parent / "datasets" / "amasum_hf"
@@ -54,4 +59,8 @@ train_dataloader = DataLoader(tokenized["train"], shuffle=True, batch_size=2, co
 val_dataloader = DataLoader(tokenized["valid"], shuffle=False, batch_size=2, collate_fn=collate_function)
 test_dataloader = DataLoader(tokenized["test"], shuffle=False, batch_size=2, collate_fn=collate_function)
 
-
+# only allow training for the summarizing head
+for param in model.parameters():
+    param.requires_grad = False
+for params in model.led.decoder.layers[-2:].parameters():
+    params.requires_grad = True
