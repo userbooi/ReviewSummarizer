@@ -82,6 +82,10 @@ model, optimizer, train_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader
 )
 
+val_dataloader, test_dataloader = accelerator.prepare(
+    val_dataloader, test_dataloader
+)
+
 # calculate training steps
 num_epochs = 3
 num_training_steps = num_epochs * len(train_dataloader)
@@ -96,4 +100,17 @@ lr_scheduler = get_scheduler(
 # get the cool progress bar yay
 progress_bar = tqdm(range(num_training_steps))
 
+# training loop
+for epoch in range(num_epochs):
+    set_train_mode(model)
 
+    for batch in train_dataloader:
+        loss = model(**batch).loss
+        accelerator.backward(loss)
+
+        optimizer.step()
+        lr_scheduler.step()
+
+        optimizer.zero_grad()
+
+        progress_bar.update(1)
