@@ -59,8 +59,41 @@ train_dataloader = DataLoader(tokenized["train"], shuffle=True, batch_size=2, co
 val_dataloader = DataLoader(tokenized["valid"], shuffle=False, batch_size=2, collate_fn=collate_function)
 test_dataloader = DataLoader(tokenized["test"], shuffle=False, batch_size=2, collate_fn=collate_function)
 
-# only allow training for the summarizing head
+# only allow training for the last two layers head
 for param in model.parameters():
     param.requires_grad = False
 for params in model.led.decoder.layers[-2:].parameters():
     params.requires_grad = True
+
+trainable = [p for p in model.parameters() if p.requires_grad]
+optimizer = AdamW(trainable, lr=5e-5)
+
+# custom mode to stops dropout from frozen layers
+def set_train_mode(model):
+    model.train()
+    # led isn't in an accelerator wrapped model
+    base = accelerator.unwrap_model(model)
+    base.led.encoder.eval()
+    base.led.decoder.layers[:-2].eval()
+
+accelerator = Accelerator()
+
+model, optimizer, train_dataloader = accelerator.prepare(
+    model, optimizer, train_dataloader
+)
+
+# calculate training steps
+num_epochs = 3
+num_training_steps = num_epochs * len(train_dataloader)
+
+lr_scheduler = get_scheduler(
+    "linear",
+    optimizer=optimizer,
+    num_warmup_steps=int(0.05 * num_training_steps),
+    num_training_steps=num_training_steps
+)
+
+# get the cool progress bar yay
+progress_bar = tqdm(range(num_training_steps))
+
+
