@@ -13,6 +13,13 @@ from tqdm.auto import tqdm
 from pprint import pprint
 
 from accelerate import Accelerator
+from accelerate.utils import set_seed
+
+import evaluate
+import nltk
+
+# set the traininig seed
+set_seed(42)
 
 checkpoint = "allenai/PRIMERA-multinews"
 DATA_DIR = Path(__file__).resolve().parent.parent / "datasets" / "amasum_hf"
@@ -141,9 +148,54 @@ def latest_checkpoint():
     ckpts = sorted(CKPT_DIR.glob("step_*.pt"))
     return ckpts[-1] if ckpts else None
 
-save_every = 500  # steps
-resume_from = None  # e.g. latest_checkpoint()
+# evaluation: validation loss + ROUGE on generated summaries
+nltk.download("punkt_tab", quiet=True)
+rouge = evaluate.load("rouge")
 
+def postprocess(texts):
+    # rougeLsum expects one sentence per line
+    return ["\n".join(nltk.sent_tokenize(t.strip())) for t in texts]
+
+def evaluate_model(dataloader, max_new_tokens=256, num_beams=4):
+    model.eval()
+    base = accelerator.unwrap_model(model)  # generate() lives on the unwrapped model
+    losses = []
+
+    for batch in tqdm(dataloader, desc="validating", disable=not accelerator.is_local_main_process):
+        with torch.no_grad():
+            # validation loss (teacher-forced)
+            loss = model(**batch).loss
+            losses.append(accelerator.gather_for_metrics(loss.repeat(batch["input_ids"].size(0))))
+
+            # real summaries; PRIMERA needs the global attention mask here too
+            generated = base.generate(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                global_attention_mask=batch["global_attention_mask"],
+                max_new_tokens=max_new_tokens,
+                num_beams=num_beams,
+            )
+
+        # pad to the same length on every process before gathering
+        generated = accelerator.pad_across_processes(generated, dim=1, pad_index=tokenizer.pad_token_id)
+        labels = accelerator.pad_across_processes(batch["labels"], dim=1, pad_index=-100)
+        generated, labels = accelerator.gather_for_metrics((generated, labels))
+
+        # the collator puts -100 in the labels, which the tokenizer can't decode
+        labels = torch.where(labels != -100, labels, tokenizer.pad_token_id)
+
+        preds = postprocess(tokenizer.batch_decode(generated, skip_special_tokens=True))
+        refs = postprocess(tokenizer.batch_decode(labels, skip_special_tokens=True))
+        rouge.add_batch(predictions=preds, references=refs)
+
+    results = {k: round(v * 100, 2) for k, v in rouge.compute(use_stemmer=True).items()}
+    results["val_loss"] = round(torch.cat(losses).mean().item(), 4)
+    return results
+
+save_every = 500  # steps
+resume_from = latest_checkpoint()
+
+# the current step - 0 if not loaded
 global_step = 0
 if resume_from is not None:
     global_step = load_checkpoint(resume_from)
@@ -187,8 +239,5 @@ for epoch in range(global_step // steps_per_epoch, num_epochs):
     save_checkpoint(global_step, epoch)
 
     # validate after each epoch
-    model.eval()
-    with torch.no_grad():
-        for batch in val_dataloader:
-            outputs = model(**batch)
-            predictions = torch.argmax(outputs.logits, dim=-1)
+    metrics = evaluate_model(val_dataloader)
+    accelerator.print(f"epoch {epoch}: {metrics}")
