@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 from tqdm.auto import tqdm
+from pprint import pprint
 
 from accelerate import Accelerator
 
@@ -49,6 +50,7 @@ tokenized = ds.map(tokenize_function, batched=True, remove_columns=ds["train"].c
 tokenized.set_format("torch")
 
 data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
+# to include padding for the global attention mask
 def collate_function(features):
     global_masks = [f.pop("global_attention_mask") for f in features]
     batch = data_collator(features)
@@ -97,14 +99,76 @@ lr_scheduler = get_scheduler(
     num_training_steps=num_training_steps
 )
 
+# checkpointing: only the trainable params + optimizer/scheduler state
+CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
+KEEP_LAST = 2  # how many checkpoints to keep on disk
+
+def save_checkpoint(step, epoch):
+    accelerator.wait_for_everyone()
+    if not accelerator.is_main_process:
+        return
+    base = accelerator.unwrap_model(model)
+    trainable_state = {
+        name: p.detach().cpu() for name, p in base.named_parameters() if p.requires_grad
+    }
+    ckpt = {
+        "model": trainable_state,
+        "optimizer": optimizer.state_dict(),
+        "lr_scheduler": lr_scheduler.state_dict(),
+        "step": step,
+        "epoch": epoch,
+    }
+    CKPT_DIR.mkdir(parents=True, exist_ok=True)
+    accelerator.save(ckpt, CKPT_DIR / f"step_{step:07d}.pt")
+
+    # delete older checkpoints (zero-padded names sort chronologically)
+    for old in sorted(CKPT_DIR.glob("step_*.pt"))[:-KEEP_LAST]:
+        old.unlink()
+
+def load_checkpoint(path):
+    """Load trainable weights + optimizer/scheduler state on top of the base model. Returns the step."""
+    ckpt = torch.load(path, map_location="cpu")
+    base = accelerator.unwrap_model(model)
+    # strict=False: the frozen weights aren't in the file, they come from the base checkpoint
+    _, unexpected = base.load_state_dict(ckpt["model"], strict=False)
+    if unexpected:
+        raise RuntimeError(f"Unexpected keys in checkpoint: {unexpected}")
+    optimizer.load_state_dict(ckpt["optimizer"])
+    lr_scheduler.load_state_dict(ckpt["lr_scheduler"])
+    return ckpt["step"]
+
+def latest_checkpoint():
+    ckpts = sorted(CKPT_DIR.glob("step_*.pt"))
+    return ckpts[-1] if ckpts else None
+
+save_every = 500  # steps
+resume_from = None  # e.g. latest_checkpoint()
+
+global_step = 0
+if resume_from is not None:
+    global_step = load_checkpoint(resume_from)
+    accelerator.print(f"Resumed from {resume_from} at step {global_step}")
+
 # get the cool progress bar yay
-progress_bar = tqdm(range(num_training_steps))
+progress_bar = tqdm(range(num_training_steps), initial=global_step)
+
+# the dimensions of output.logits is (batch-size, target_seq_length, vocab_size)
+# batch = next(iter(train_dataloader))
+# output = model(**batch)
+# predictions = torch.argmax(output.logits, dim=1)
+# pprint(output.logits)
+# print(output.logits.shape)
 
 # training loop
-for epoch in range(num_epochs):
+steps_per_epoch = len(train_dataloader)
+for epoch in range(global_step // steps_per_epoch, num_epochs):
     set_train_mode(model)
 
-    for batch in train_dataloader:
+    # when resuming mid-epoch, skip the batches already trained on
+    skip = global_step - epoch * steps_per_epoch
+    epoch_dataloader = accelerator.skip_first_batches(train_dataloader, skip) if skip > 0 else train_dataloader
+
+    for batch in epoch_dataloader:
         loss = model(**batch).loss
         accelerator.backward(loss)
 
@@ -114,3 +178,17 @@ for epoch in range(num_epochs):
         optimizer.zero_grad()
 
         progress_bar.update(1)
+        global_step += 1
+
+        if global_step % save_every == 0:
+            save_checkpoint(global_step, epoch)
+
+    # always checkpoint at the end of an epoch
+    save_checkpoint(global_step, epoch)
+
+    # validate after each epoch
+    model.eval()
+    with torch.no_grad():
+        for batch in val_dataloader:
+            outputs = model(**batch)
+            predictions = torch.argmax(outputs.logits, dim=-1)
