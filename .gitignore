@@ -4,3 +4,4 @@ __pycache__/
 Hf_test/
 models/
 datasets/*
+checkpoints/

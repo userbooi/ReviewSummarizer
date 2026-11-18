@@ -1,6 +1,7 @@
 from datasets import load_from_disk
 from prepare_dataset import save_dataset
 from pathlib import Path
+import os
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from transformers import DataCollatorForSeq2Seq, get_scheduler
@@ -22,9 +23,11 @@ import nltk
 set_seed(42)
 
 checkpoint = "allenai/PRIMERA-multinews"
-DATA_DIR = Path(__file__).resolve().parent.parent / "datasets" / "amasum_hf"
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+# override with env vars on Kaggle, e.g. DATA_DIR=/kaggle/working/amasum_hf
+DATA_DIR = Path(os.environ.get("DATA_DIR", PROJECT_DIR / "datasets" / "amasum_hf"))
 if not DATA_DIR.exists():
-    RAW_DATA_PATH = Path(__file__).resolve().parent.parent / "datasets" / "amasum"
+    RAW_DATA_PATH = PROJECT_DIR / "datasets" / "amasum"
     save_dataset(DATA_DIR, RAW_DATA_PATH)
 
 ds = load_from_disk(DATA_DIR)
@@ -65,7 +68,13 @@ def collate_function(features):
     return batch
 
 train_dataloader = DataLoader(tokenized["train"], shuffle=True, batch_size=2, collate_fn=collate_function)
-val_dataloader = DataLoader(tokenized["valid"], shuffle=False, batch_size=2, collate_fn=collate_function)
+# per-epoch validation generates summaries, which is slow: use a fixed subset (VAL_SUBSET=0 for the full set)
+VAL_SUBSET = int(os.environ.get("VAL_SUBSET", 300))
+val_ds = tokenized["valid"]
+if 0 < VAL_SUBSET < len(val_ds):
+    val_ds = val_ds.select(range(VAL_SUBSET))
+
+val_dataloader = DataLoader(val_ds, shuffle=False, batch_size=2, collate_fn=collate_function)
 test_dataloader = DataLoader(tokenized["test"], shuffle=False, batch_size=2, collate_fn=collate_function)
 
 # only allow training for the last two layers head
@@ -85,7 +94,8 @@ def set_train_mode(model):
     base.led.encoder.eval()
     base.led.decoder.layers[:-2].eval()
 
-accelerator = Accelerator()
+# fp16 needs a GPU; fall back to full precision on CPU
+accelerator = Accelerator(mixed_precision="fp16" if torch.cuda.is_available() else "no")
 
 model, optimizer, train_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader
@@ -107,7 +117,8 @@ lr_scheduler = get_scheduler(
 )
 
 # checkpointing: only the trainable params + optimizer/scheduler state
-CKPT_DIR = Path(__file__).resolve().parent.parent / "checkpoints"
+# on Kaggle set CKPT_DIR=/kaggle/working/checkpoints so checkpoints persist in the notebook output
+CKPT_DIR = Path(os.environ.get("CKPT_DIR", PROJECT_DIR / "checkpoints"))
 KEEP_LAST = 2  # how many checkpoints to keep on disk
 
 def save_checkpoint(step, epoch):
@@ -168,13 +179,15 @@ def evaluate_model(dataloader, max_new_tokens=256, num_beams=4):
             losses.append(accelerator.gather_for_metrics(loss.repeat(batch["input_ids"].size(0))))
 
             # real summaries; PRIMERA needs the global attention mask here too
-            generated = base.generate(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                global_attention_mask=batch["global_attention_mask"],
-                max_new_tokens=max_new_tokens,
-                num_beams=num_beams,
-            )
+            # the unwrapped model isn't autocast-wrapped, so enable fp16 explicitly
+            with accelerator.autocast():
+                generated = base.generate(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    global_attention_mask=batch["global_attention_mask"],
+                    max_new_tokens=max_new_tokens,
+                    num_beams=num_beams,
+                )
 
         # pad to the same length on every process before gathering
         generated = accelerator.pad_across_processes(generated, dim=1, pad_index=tokenizer.pad_token_id)
