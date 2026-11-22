@@ -34,6 +34,9 @@ ds = load_from_disk(DATA_DIR)
 # print(ds)
 # print(ds["train"][0])
 
+# fp16 needs a GPU; fall back to full precision on CPU
+accelerator = Accelerator(mixed_precision="fp16" if torch.cuda.is_available() else "no")
+
 # create the tokenizer
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 # create the model
@@ -56,7 +59,8 @@ def tokenize_function(batch):
 
     return model_inputs
 
-tokenized = ds.map(tokenize_function, batched=True, remove_columns=ds["train"].column_names)
+with accelerator.main_process_first():
+    tokenized = ds.map(tokenize_function, batched=True, remove_columns=ds["train"].column_names)
 tokenized.set_format("torch")
 
 data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
@@ -93,9 +97,6 @@ def set_train_mode(model):
     base = accelerator.unwrap_model(model)
     base.led.encoder.eval()
     base.led.decoder.layers[:-2].eval()
-
-# fp16 needs a GPU; fall back to full precision on CPU
-accelerator = Accelerator(mixed_precision="fp16" if torch.cuda.is_available() else "no")
 
 model, optimizer, train_dataloader = accelerator.prepare(
     model, optimizer, train_dataloader
