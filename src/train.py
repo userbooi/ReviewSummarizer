@@ -254,3 +254,9 @@ for epoch in range(global_step // steps_per_epoch, num_epochs):
     # validate after each epoch
     metrics = evaluate_model(val_dataloader)
     accelerator.print(f"epoch {epoch}: {metrics}")
+
+FINAL_DIR = Path(os.environ.get("FINAL_DIR", PROJECT_DIR / "models"))
+accelerator.wait_for_everyone()
+if accelerator.is_main_process:
+    accelerator.unwrap_model(model).save_pretrained(FINAL_DIR)
+    tokenizer.save_pretrained(FINAL_DIR)

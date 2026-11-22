@@ -5,3 +5,4 @@ Hf_test/
 models/
 datasets/*
 checkpoints/
+*.zipcd
