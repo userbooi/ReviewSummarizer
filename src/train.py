@@ -261,3 +261,6 @@ accelerator.wait_for_everyone()
 if accelerator.is_main_process:
     accelerator.unwrap_model(model).save_pretrained(FINAL_DIR)
     tokenizer.save_pretrained(FINAL_DIR)
+
+accelerator.wait_for_everyone()
+accelerator.end_training()
