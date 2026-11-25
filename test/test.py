@@ -1,3 +1,7 @@
+"""
+metrics: {'rouge1': np.float64(23.47), 'rouge2': np.float64(5.17), 'rougeL': np.float64(17.94), 'rougeLsum': np.float64(18.66), 'test_loss': 2.8172}
+"""
+
 from datasets import load_from_disk
 from pathlib import Path
 import os

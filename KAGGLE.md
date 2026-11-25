@@ -135,6 +135,74 @@ After the commit finishes, its **Output** tab contains:
   model = AutoModelForSeq2SeqLM.from_pretrained(path)
   ```
 
+## 10. Test the fine-tuned model
+
+`test/test.py` scores the fine-tuned model on the AMASUM **test** split. It reports ROUGE-1/2/L/Lsum on generated summaries (beam search, 4 beams, up to 256 new tokens) and the teacher-forced `test_loss`. Use a fresh notebook, or the training notebook after training has finished.
+
+### Inputs
+
+Use the same settings as step 1, plus:
+
+- the **training notebook's output**, via **Add Input → Your Work → <training notebook>**, which supplies `models/`;
+- the **`test` folder**. The `src` dataset doesn't include it, so either upload `test/` as its own dataset or add it to a new version of the `src` dataset.
+
+### Setup
+
+```python
+TEST_IN  = "/kaggle/input/<test-dataset>/test"                  # adjust
+MODEL_IN = "/kaggle/input/<training-notebook-output>/models"     # adjust
+DATA_IN  = "/kaggle/input/<data-dataset>/amasum_hf"              # adjust
+
+!rm -rf /kaggle/working/test
+!cp -r {TEST_IN} /kaggle/working/test
+!pip install -q evaluate rouge_score
+
+import os
+os.environ["MODEL_DIR"] = MODEL_IN   # read-only is fine, the model is only loaded
+os.environ["DATA_DIR"]  = DATA_IN
+```
+
+`test.py` uses the folder above `test/` as its project folder, so with no environment variables it looks for `/kaggle/working/models` and `/kaggle/working/datasets/amasum_hf`. If you test in the same notebook right after training, the model is already in `/kaggle/working/models`, so you only need `DATA_DIR`, as set in step 3.
+
+### Run
+
+```python
+# both GPUs
+!cd /kaggle/working/test && accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 test.py
+
+# or a single GPU
+!cd /kaggle/working/test && python test.py
+```
+
+The last line of the log is the result:
+
+```
+metrics: {'rouge1': ..., 'rouge2': ..., 'rougeL': ..., 'rougeLsum': ..., 'test_loss': ...}
+```
+
+Scores are percentages and `test_loss` is the mean cross-entropy loss. Copy the line into the notes at the top of `test/model_comparison.py` to keep a record.
+
+### Runtime
+
+`test.py` has no subset option, so it generates summaries for all **3,166** test examples. That can take hours on a T4, so run it as a commit (step 8). For a quick check first, limit it to the first N examples:
+
+```python
+!sed -i 's/\["test"\]/["test"].select(range(200))/' /kaggle/working/test/test.py
+!grep -n 'load_from_disk' /kaggle/working/test/test.py
+```
+
+Use the full set for any number you report.
+
+### Baseline comparison
+
+`test/model_comparison.py` gives the reference point. It runs the **untuned** `allenai/PRIMERA-multinews` from the Hub on the **validation** split, limited to the first `VAL_SUBSET` (default 300) examples, which is the same subset training validates on. It needs Internet but no `MODEL_DIR`:
+
+```python
+!cd /kaggle/working/test && accelerate launch --multi_gpu --num_processes 2 --mixed_precision fp16 model_comparison.py
+```
+
+To compare it with the fine-tuned model, use the per-epoch validation metrics from the training log, not the `test.py` numbers, since those come from a different split. The results recorded so far are at the top of `model_comparison.py`: a ROUGE-1 of 9.25 for the baseline against 23.91 after fine-tuning.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -145,3 +213,5 @@ After the commit finishes, its **Output** tab contains:
 | Epochs too slow | Lower `VAL_SUBSET`. |
 | Run killed at 12 hours | Resume (step 6) and commit again. |
 | Checkpoints missing after the run | The run was interactive, not committed (step 8). |
+| `test.py`: `OSError` / can't find `config.json` | `MODEL_DIR` is wrong. It must point at the folder that contains `config.json` and `model.safetensors`. |
+| `test.py` takes too long | Test a subset first (step 10, Runtime), then run the full set as a commit. |
