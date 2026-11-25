@@ -19,7 +19,7 @@ from accelerate.utils import set_seed
 import evaluate
 import nltk
 
-# set the traininig seed
+# set the training seed
 set_seed(42)
 
 checkpoint = "allenai/PRIMERA-multinews"
