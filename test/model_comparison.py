@@ -1,7 +1,11 @@
 '''
+Fined-tuned PRIMERA model
 epoch 2: {'rouge1': np.float64(23.91), 'rouge2': np.float64(5.22), 'rougeL': np.float64(18.2), 'rougeLsum': np.float64(18.71), 'val_loss': 2.8683}
 epoch 1: {'rouge1': np.float64(23.51), 'rouge2': np.float64(5.61), 'rougeL': np.float64(18.2), 'rougeLsum': np.float64(18.71), 'val_loss': 2.8993}
 epoch 0: {'rouge1': np.float64(22.29), 'rouge2': np.float64(4.61), 'rougeL': np.float64(16.91), 'rougeLsum': np.float64(17.29), 'val_loss': 2.9474}
+
+Default PRIMERA model
+metrics: {'rouge1': np.float64(9.25), 'rouge2': np.float64(1.44), 'rougeL': np.float64(6.36), 'rougeLsum': np.float64(8.26), 'val_loss': 5.1507}
 '''
 
 from datasets import load_from_disk
