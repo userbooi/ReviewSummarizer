@@ -33,10 +33,14 @@ DATA_IN = "/kaggle/input/<data-dataset>/amasum_hf"   # adjust
 !cp -r {SRC_IN} /kaggle/working/src
 
 # data: symlink (recommended, no extra 2 GB in the output)
-!mkdir -p /kaggle/working/datasets
-!ln -sfn {DATA_IN} /kaggle/working/datasets/amasum_hf
+# copy to scratch space: writable, and not saved as output
+!mkdir -p /kaggle/temp/datasets
+!rm -rf /kaggle/temp/datasets/amasum_hf
+!cp -r {DATA_IN} /kaggle/temp/datasets/amasum_hf
+!ls /kaggle/temp/datasets/amasum_hf
 
-!ls -la /kaggle/working /kaggle/working/datasets
+import os
+os.environ["DATA_DIR"] = "/kaggle/temp/datasets/amasum_hf"
 ```
 
 Afterwards the layout looks like this:
